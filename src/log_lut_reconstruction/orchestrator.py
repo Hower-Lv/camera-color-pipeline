@@ -210,7 +210,7 @@ def run_synthetic_pipeline(
     )
 
     report = {
-        "pipeline": "log-lut-pipeline",
+        "pipeline": "log-lut-reconstruction",
         "status": quality["status"],
         "stages": {
             "spectral_targets": {
@@ -251,7 +251,7 @@ def run_synthetic_pipeline(
         inputs=provenance_inputs,
         artifacts=[cube_path, target_path, tone_path, report_path],
         metadata={
-            "pipeline": "log-lut-pipeline",
+            "pipeline": "log-lut-reconstruction",
             "seed": config.seed,
             "status": quality["status"],
         },

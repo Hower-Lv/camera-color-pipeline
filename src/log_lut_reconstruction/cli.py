@@ -9,7 +9,7 @@ from .orchestrator import run_synthetic_pipeline
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="log-lut-pipeline",
+        prog="log-lut-reconstruction",
         description="Reconstruct a camera Log response and deploy a chart-validated LUT",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)

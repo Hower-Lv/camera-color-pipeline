@@ -1,6 +1,6 @@
-# Log-LUT Pipeline
+# Log-LUT Reconstruction
 
-`log-lut-pipeline` reconstructs an undocumented camera Log response and turns it into a chart-validated, deployable `.cube` LUT. Spectral targets and RAW flat-field calibration are supporting measurements that keep Log and LUT errors from being confused with illumination or chart-reference errors.
+`log-lut-reconstruction` reconstructs an undocumented camera Log response and turns it into a chart-validated, deployable `.cube` LUT. Spectral targets and RAW flat-field calibration are supporting measurements that keep Log and LUT errors from being confused with illumination or chart-reference errors.
 
 The main sequence is:
 
@@ -73,7 +73,7 @@ python -m pip install -e ".[full,dev]"
 ## Data-free end-to-end run
 
 ```powershell
-log-lut-pipeline synthetic `
+log-lut-reconstruction synthetic `
   --config configs/synthetic.toml `
   --output outputs/synthetic
 ```

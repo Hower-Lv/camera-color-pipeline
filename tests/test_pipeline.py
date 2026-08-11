@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from log_lut_pipeline import PipelineConfig, QualityThresholds
-from log_lut_pipeline.orchestrator import run_synthetic_pipeline
-from log_lut_pipeline.quality import evaluate_quality_gates
+from log_lut_reconstruction import PipelineConfig, QualityThresholds
+from log_lut_reconstruction.orchestrator import run_synthetic_pipeline
+from log_lut_reconstruction.quality import evaluate_quality_gates
 
 
 def test_synthetic_pipeline_runs_end_to_end(tmp_path) -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from log_lut_pipeline import PipelineConfig, run_synthetic_pipeline
+from log_lut_reconstruction import PipelineConfig, run_synthetic_pipeline
 
 
 def main() -> None:
