@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "log-lut-pipeline"
+version = "0.1.0"
+description = "Reconstruct undocumented camera Log curves and deploy chart-validated 3D LUTs"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "log-lut-pipeline contributors" }]
+keywords = ["color-science", "camera-calibration", "camera-log", "spectral", "3d-lut"]
+dependencies = ["numpy>=1.26"]
+
+[project.optional-dependencies]
+full = [
+  "spectral-color-calibrator @ git+https://github.com/Hower-Lv/spectral-color-calibrator.git",
+  "paired-log-reconstruction @ git+https://github.com/Hower-Lv/paired-log-reconstruction.git",
+  "chart-lut-builder @ git+https://github.com/Hower-Lv/chart-lut-builder.git",
+]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+log-lut-pipeline = "log_lut_pipeline.cli:main"
+
+[project.urls]
+Documentation = "https://github.com/Hower-Lv/log-lut-pipeline#readme"
+Issues = "https://github.com/Hower-Lv/log-lut-pipeline/issues"
+Source = "https://github.com/Hower-Lv/log-lut-pipeline"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/log_lut_pipeline"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
