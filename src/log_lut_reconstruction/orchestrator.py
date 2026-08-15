@@ -7,11 +7,25 @@ from pathlib import Path
 import numpy as np
 
 from .config import PipelineConfig
+from .measurement_policy import (
+    MeasurementKind,
+    MeasurementPolicyResult,
+    SpatialCorrectionSpec,
+    apply_selective_measurement_policy,
+    apply_spatial_correction_before_lut,
+)
 from .provenance import write_provenance_manifest
 from .quality import evaluate_quality_gates
 
 try:
-    from chart_lut_builder import D65_WHITE, ToneCurve, build_model, leave_one_capture_out
+    from chart_lut_builder import (
+        D65_WHITE,
+        XYZ_TO_SRGB,
+        ToneCurve,
+        bradford_matrix,
+        build_model,
+        leave_one_capture_out,
+    )
     from log_reconstruction import (
         LogTemplate,
         fit_hlg_log_pair,
@@ -58,7 +72,11 @@ def _synthetic_reflectances(
         spectrum /= np.max(spectrum)
         spectrum *= rng.uniform(0.35, 0.95)
         reflectances.append(np.clip(spectrum, 0.02, 0.95))
-    return np.asarray(reflectances)
+    result = np.asarray(reflectances)
+    chromatic = result[gray_count:]
+    neutral = np.mean(chromatic, axis=1, keepdims=True)
+    result[gray_count:] = neutral + 0.6 * (chromatic - neutral)
+    return result
 
 
 def _log_encode(values: np.ndarray, curvature: float) -> np.ndarray:
@@ -76,6 +94,66 @@ def _write_csv(path: Path, header: list[str], rows: np.ndarray) -> None:
         writer.writerows(rows.tolist())
 
 
+def _write_measurement_policy_csv(
+    path: Path,
+    original_linear: np.ndarray,
+    result: MeasurementPolicyResult,
+) -> None:
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "measurement_kind",
+                "linear_before_policy",
+                "spatial_factor",
+                "linear_after_policy",
+                "encoded_unchanged",
+            ]
+        )
+        for kind, before, factor, after, encoded in zip(
+            result.kinds,
+            original_linear,
+            result.spatial_factors,
+            result.linear,
+            result.encoded,
+            strict=True,
+        ):
+            writer.writerow([kind, before, factor, after, encoded])
+
+
+def _render_patch_grid(patches: np.ndarray, height: int, width: int) -> np.ndarray:
+    values = np.asarray(patches, dtype=np.float64)
+    columns = min(6, values.shape[0])
+    rows = int(np.ceil(values.shape[0] / columns))
+    image = np.zeros((height, width, 3), dtype=np.float64)
+    row_edges = np.linspace(0, height, rows + 1, dtype=int)
+    column_edges = np.linspace(0, width, columns + 1, dtype=int)
+    for index, patch in enumerate(values):
+        row, column = divmod(index, columns)
+        image[
+            row_edges[row] : row_edges[row + 1],
+            column_edges[column] : column_edges[column + 1],
+        ] = patch
+    return image
+
+
+def _sample_patch_grid(image: np.ndarray, patch_count: int) -> np.ndarray:
+    values = np.asarray(image, dtype=np.float64)
+    columns = min(6, patch_count)
+    rows = int(np.ceil(patch_count / columns))
+    row_edges = np.linspace(0, values.shape[0], rows + 1, dtype=int)
+    column_edges = np.linspace(0, values.shape[1], columns + 1, dtype=int)
+    samples = []
+    for index in range(patch_count):
+        row, column = divmod(index, columns)
+        patch = values[
+            row_edges[row] : row_edges[row + 1],
+            column_edges[column] : column_edges[column + 1],
+        ]
+        samples.append(np.mean(patch, axis=(0, 1)))
+    return np.asarray(samples)
+
+
 def run_synthetic_pipeline(
     config: PipelineConfig,
     output_dir: str | Path,
@@ -90,17 +168,51 @@ def run_synthetic_pipeline(
     wavelengths = np.arange(400.0, 701.0, 10.0)
     cmfs = _pseudo_cmfs(wavelengths)
     illuminant = 0.78 + 0.22 * (wavelengths - wavelengths.min()) / np.ptp(wavelengths)
-    reflectances = _synthetic_reflectances(wavelengths, config.patch_count, rng)
-    target_xyz = reflectance_to_xyz(wavelengths, reflectances, illuminant, cmfs)
-    source_white = reflectance_to_xyz(wavelengths, np.ones((1, wavelengths.size)), illuminant, cmfs)[0]
+    candidate_count = max(config.patch_count * 12, config.patch_count + 24)
+    candidate_reflectances = _synthetic_reflectances(wavelengths, candidate_count, rng)
+    candidate_xyz = reflectance_to_xyz(
+        wavelengths, candidate_reflectances, illuminant, cmfs
+    )
+    source_white = reflectance_to_xyz(
+        wavelengths, np.ones((1, wavelengths.size)), illuminant, cmfs
+    )[0]
 
     sensor_mix = np.array(
         [[0.74, 0.15, 0.05], [0.12, 0.78, 0.13], [0.04, 0.16, 0.82]],
         dtype=np.float64,
     )
-    camera_rgb = target_xyz @ sensor_mix
     camera_white = source_white @ sensor_mix
-    camera_rgb /= camera_white
+    frontend = np.array(
+        [[0.94, 0.035, 0.010], [0.018, 0.955, 0.012], [0.012, 0.045, 0.925]],
+        dtype=np.float64,
+    )
+    frontend /= np.sum(frontend, axis=1, keepdims=True)
+    candidate_camera_rgb = (candidate_xyz @ sensor_mix) / camera_white
+    candidate_common_rgb = np.clip(candidate_camera_rgb @ frontend.T, 0.0, 1.0)
+    candidate_destination_rgb = (
+        candidate_xyz @ bradford_matrix(source_white, D65_WHITE).T @ XYZ_TO_SRGB.T
+    )
+    gray_count = min(6, config.patch_count)
+    neutral_width = config.neutral_width_cells / max(config.lut_size - 1, 1)
+    encoded_candidate = _log_encode(candidate_common_rgb, config.log_curvature)
+    chromatic = np.arange(gray_count, candidate_count)
+    in_gamut = np.all(
+        (candidate_destination_rgb[chromatic] >= 0.0)
+        & (candidate_destination_rgb[chromatic] <= 1.0),
+        axis=1,
+    )
+    outside_neutral_band = (
+        np.ptp(encoded_candidate[chromatic], axis=1) > neutral_width + 0.01
+    )
+    selected_chromatic = chromatic[in_gamut & outside_neutral_band]
+    needed_chromatic = config.patch_count - gray_count
+    if selected_chromatic.size < needed_chromatic:
+        raise RuntimeError("synthetic candidate pool cannot satisfy the LUT validation domain")
+    selected = np.concatenate(
+        [np.arange(gray_count), selected_chromatic[:needed_chromatic]]
+    )
+    target_xyz = candidate_xyz[selected]
+    camera_rgb = candidate_camera_rgb[selected]
 
     height, width = 64, 96
     yy, xx = np.mgrid[-1.0:1.0:complex(height), -1.0:1.0:complex(width)]
@@ -117,6 +229,7 @@ def run_synthetic_pipeline(
     corrected_white = apply_flat_field(white_image, flat_model)
     normalized_white = corrected_white / np.median(corrected_white, axis=(0, 1), keepdims=True)
     flat_field_residual_cv = float(np.max(np.std(normalized_white, axis=(0, 1))))
+    spatial_spec = SpatialCorrectionSpec(config.measurement_policy.geometry_id)
 
     ccm = fit_ccm(camera_rgb, target_xyz, model=config.color_model, ridge=config.ridge)
     ccm_prediction = np.clip(apply_ccm(camera_rgb, ccm), 0.0, None)
@@ -125,16 +238,42 @@ def run_synthetic_pipeline(
     )
     ccm_summary = summarize_delta_e(ccm_delta)
 
-    frontend = np.array(
-        [[0.94, 0.035, 0.010], [0.018, 0.955, 0.012], [0.012, 0.045, 0.925]],
-        dtype=np.float64,
-    )
     raw_pair = rng.beta(1.2, 3.0, size=(config.pair_sample_count, 3))
     common_pair = np.clip(raw_pair @ frontend.T, 0.0, 1.0)
     common_luma = common_pair @ np.array([0.2627, 0.6780, 0.0593])
     hlg_rgb = hlg_oetf(common_pair)
     hlg_luma_code = _limited_code(hlg_oetf(common_luma))
     log_luma_code = _limited_code(_log_encode(common_luma, config.log_curvature))
+    controlled_linear = np.geomspace(0.004, 0.8, 9)
+    controlled_factors = np.linspace(0.80, 0.94, controlled_linear.size)
+    local_linear = np.geomspace(0.12, 0.18, 24)
+    paired_linear = common_luma[:32]
+    policy_linear = np.concatenate(
+        [np.asarray([0.0]), controlled_linear, local_linear, paired_linear]
+    )
+    policy_factors = np.concatenate(
+        [
+            np.asarray([1.0]),
+            controlled_factors,
+            np.ones(local_linear.size + paired_linear.size),
+        ]
+    )
+    policy_kinds = (
+        [MeasurementKind.BLACK_ANCHOR]
+        + [MeasurementKind.CONTROLLED_EXPOSURE] * controlled_linear.size
+        + [MeasurementKind.LOCAL_WHITE_GRADIENT] * local_linear.size
+        + [MeasurementKind.PAIRED_TRANSFER] * paired_linear.size
+    )
+    encoded_input_linear = policy_linear.copy()
+    controlled_slice = slice(1, 1 + controlled_linear.size)
+    encoded_input_linear[controlled_slice] *= controlled_factors
+    policy_encoded = _limited_code(_log_encode(encoded_input_linear, config.log_curvature))
+    measurement_policy = apply_selective_measurement_policy(
+        policy_linear,
+        policy_encoded,
+        policy_kinds,
+        spatial_factors=policy_factors,
+    )
     template = LogTemplate(curvature=config.log_curvature)
     method_a = fit_hlg_log_pair(hlg_luma_code, log_luma_code, template=template)
     method_b = fit_raw_hlg_log(raw_pair, hlg_rgb, log_luma_code, template=template)
@@ -147,7 +286,16 @@ def run_synthetic_pipeline(
     tone_curve = ToneCurve.from_samples(consensus_encoded, linear_knots)
 
     common_chart = np.clip(camera_rgb @ frontend.T, 0.0, 1.0)
-    encoded_chart = _log_encode(common_chart, config.log_curvature)
+    chart_linear_image = _render_patch_grid(common_chart, height, width)
+    observed_chart_image = chart_linear_image * field
+    corrected_chart_image = apply_spatial_correction_before_lut(
+        observed_chart_image,
+        flat_model,
+        spatial_spec,
+        actual_geometry_id=config.measurement_policy.geometry_id,
+    )
+    corrected_chart_samples = _sample_patch_grid(corrected_chart_image, config.patch_count)
+    encoded_chart = _log_encode(np.clip(corrected_chart_samples, 0.0, 1.0), config.log_curvature)
     encoded_rows = []
     xyz_rows = []
     capture_ids = []
@@ -184,6 +332,7 @@ def run_synthetic_pipeline(
     )
     cube_path = output / "synthetic_camera_log_to_srgb.cube"
     model.write_cube(str(cube_path))
+    in_memory_validation = model.evaluate(encoded_rows_array, xyz_rows_array)
     validation = model.validate_cube(str(cube_path), encoded_rows_array, xyz_rows_array)
 
     gray_axis = validation["gray_axis"]
@@ -195,19 +344,21 @@ def run_synthetic_pipeline(
         "tone_consensus_rmse": tone_consensus_rmse,
         "lut_mean_delta_e00": validation["mean_delta_e00"],
         "lut_p95_delta_e00": validation["p95_delta_e00"],
-        "gray_reverse_steps": gray_axis["reverse_steps"],
+        "gray_reverse_steps": gray_axis["reverse_luma_steps"],
         "gray_channel_spread": gray_axis["maximum_channel_spread"],
     }
     quality = evaluate_quality_gates(metrics, config.quality)
 
     target_path = output / "synthetic_target_xyz.csv"
     tone_path = output / "synthetic_tone_consensus.csv"
+    policy_path = output / "synthetic_measurement_policy.csv"
     _write_csv(target_path, ["X", "Y", "Z"], target_xyz)
     _write_csv(
         tone_path,
         ["linear", "method_a_encoded", "method_b_encoded", "consensus_encoded"],
         np.column_stack([linear_knots, encoded_a, encoded_b, consensus_encoded]),
     )
+    _write_measurement_policy_csv(policy_path, policy_linear, measurement_policy)
 
     report = {
         "pipeline": "log-lut-reconstruction",
@@ -218,6 +369,10 @@ def run_synthetic_pipeline(
                 "source_white_xyz": source_white.tolist(),
             },
             "spatial_correction": {"flat_field_residual_cv": flat_field_residual_cv},
+            "measurement_point_policy": {
+                **measurement_policy.summary(),
+                "configuration": config.measurement_policy.to_dict(),
+            },
             "static_color_calibration": {
                 "model": config.color_model,
                 "delta_e00": ccm_summary,
@@ -231,6 +386,10 @@ def run_synthetic_pipeline(
             },
             "lut_deployment": {
                 "lut_size": config.lut_size,
+                "spatial_correction": spatial_spec.to_dict(),
+                "training_samples_corrected_before_log_encoding": True,
+                "in_memory_mean_delta_e00": in_memory_validation["mean_delta_e00"],
+                "in_memory_p95_delta_e00": in_memory_validation["p95_delta_e00"],
                 "mean_delta_e00": validation["mean_delta_e00"],
                 "p95_delta_e00": validation["p95_delta_e00"],
                 "max_delta_e00": validation["max_delta_e00"],
@@ -249,11 +408,12 @@ def run_synthetic_pipeline(
         manifest_path,
         root=Path(config_path).resolve().parent.parent if config_path is not None else output,
         inputs=provenance_inputs,
-        artifacts=[cube_path, target_path, tone_path, report_path],
+        artifacts=[cube_path, target_path, tone_path, policy_path, report_path],
         metadata={
             "pipeline": "log-lut-reconstruction",
             "seed": config.seed,
             "status": quality["status"],
+            "measurement_policy": config.measurement_policy.to_dict(),
         },
     )
     return report

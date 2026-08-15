@@ -6,8 +6,16 @@ capture_count = 3
 log_curvature = 24.0
 color_model = "3x9"
 ridge = 0.00001
-lut_size = 17
+lut_size = 65
 neutral_width_cells = 1
+
+[measurement_policy]
+black_anchor = "bypass"
+controlled_exposure = "linear_x_only"
+local_white_gradient = "bypass_preserve_gradient"
+paired_transfer = "bypass_same_position"
+image_spatial_correction = "linear_before_lut"
+geometry_id = "synthetic_fixed_geometry"
 
 [quality]
 max_flat_field_residual_cv = 0.005
