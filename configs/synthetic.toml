@@ -20,9 +20,9 @@ geometry_id = "synthetic_fixed_geometry"
 [quality]
 max_flat_field_residual_cv = 0.005
 max_ccm_mean_delta_e00 = 0.25
-max_method_a_rmse = 0.001
-max_method_b_rmse = 0.001
-max_tone_consensus_rmse = 0.001
+max_hlg_path_rmse = 0.001
+max_raw_path_rmse = 0.001
+max_dual_path_disagreement_rmse = 0.001
 max_lut_mean_delta_e00 = 1.0
 max_lut_p95_delta_e00 = 2.0
 max_gray_reverse_steps = 0

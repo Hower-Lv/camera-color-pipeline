@@ -1,6 +1,8 @@
 """Reconstruct camera Log responses and deploy chart-validated LUTs."""
 
 from .config import PipelineConfig, QualityThresholds
+from .hlg_path import HLGPathResult, fit_hlg_log_path
+from .integration import DualPathResult, reconstruct_dual_path
 from .log_templates import (
     PUBLIC_LOG_TEMPLATES,
     PublicLogFit,
@@ -19,6 +21,7 @@ from .measurement_policy import (
     apply_spatial_correction_before_lut,
 )
 from .quality import evaluate_quality_gates
+from .raw_path import RAWPathResult, fit_raw_log_path
 
 
 def run_synthetic_pipeline(*args, **kwargs):
@@ -29,14 +32,20 @@ def run_synthetic_pipeline(*args, **kwargs):
 
 __all__ = [
     "PipelineConfig",
+    "DualPathResult",
+    "HLGPathResult",
     "PUBLIC_LOG_TEMPLATES",
     "PublicLogFit",
     "PublicLogTemplate",
     "QualityThresholds",
+    "RAWPathResult",
     "compare_public_log_templates",
     "encode_public_log",
     "evaluate_quality_gates",
     "fit_public_log_template",
+    "fit_hlg_log_path",
+    "fit_raw_log_path",
+    "reconstruct_dual_path",
     "run_synthetic_pipeline",
     "run_lut_gallery",
     "MeasurementKind",

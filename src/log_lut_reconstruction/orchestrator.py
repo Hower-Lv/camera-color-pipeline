@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from .config import PipelineConfig
+from .integration import reconstruct_dual_path
 from .measurement_policy import (
     MeasurementKind,
     MeasurementPolicyResult,
@@ -26,12 +27,7 @@ try:
         build_model,
         leave_one_capture_out,
     )
-    from log_reconstruction import (
-        LogTemplate,
-        fit_hlg_log_pair,
-        fit_raw_hlg_log,
-        hlg_oetf,
-    )
+    from log_reconstruction import LogTemplate, hlg_oetf
     from spectral_color_calibrator import (
         apply_ccm,
         apply_flat_field,
@@ -238,12 +234,14 @@ def run_synthetic_pipeline(
     )
     ccm_summary = summarize_delta_e(ccm_delta)
 
-    raw_pair = rng.beta(1.2, 3.0, size=(config.pair_sample_count, 3))
-    common_pair = np.clip(raw_pair @ frontend.T, 0.0, 1.0)
+    raw_pair_rgb = rng.beta(1.2, 3.0, size=(config.pair_sample_count, 3))
+    common_pair = np.clip(raw_pair_rgb @ frontend.T, 0.0, 1.0)
     common_luma = common_pair @ np.array([0.2627, 0.6780, 0.0593])
-    hlg_rgb = hlg_oetf(common_pair)
     hlg_luma_code = _limited_code(hlg_oetf(common_luma))
     log_luma_code = _limited_code(_log_encode(common_luma, config.log_curvature))
+    raw_relative_linear = common_luma * rng.normal(
+        1.0, 1e-6, size=config.pair_sample_count
+    )
     controlled_linear = np.geomspace(0.004, 0.8, 9)
     controlled_factors = np.linspace(0.80, 0.94, controlled_linear.size)
     local_linear = np.geomspace(0.12, 0.18, 24)
@@ -275,15 +273,15 @@ def run_synthetic_pipeline(
         spatial_factors=policy_factors,
     )
     template = LogTemplate(curvature=config.log_curvature)
-    method_a = fit_hlg_log_pair(hlg_luma_code, log_luma_code, template=template)
-    method_b = fit_raw_hlg_log(raw_pair, hlg_rgb, log_luma_code, template=template)
-
     linear_knots = np.linspace(0.0, 1.0, 513)
-    encoded_a = method_a.log_fit.predict(linear_knots)
-    encoded_b = method_b.log_fit.predict(linear_knots)
-    consensus_encoded = np.maximum.accumulate((encoded_a + encoded_b) / 2.0)
-    tone_consensus_rmse = float(np.sqrt(np.mean((encoded_a - encoded_b) ** 2)))
-    tone_curve = ToneCurve.from_samples(consensus_encoded, linear_knots)
+    dual_path = reconstruct_dual_path(
+        hlg_luma_code,
+        raw_relative_linear,
+        log_luma_code,
+        template=template,
+        linear_grid=linear_knots,
+    )
+    tone_curve = ToneCurve.from_samples(dual_path.consensus_encoded, dual_path.linear)
 
     common_chart = np.clip(camera_rgb @ frontend.T, 0.0, 1.0)
     chart_linear_image = _render_patch_grid(common_chart, height, width)
@@ -339,9 +337,9 @@ def run_synthetic_pipeline(
     metrics = {
         "flat_field_residual_cv": flat_field_residual_cv,
         "ccm_mean_delta_e00": ccm_summary["mean"],
-        "method_a_rmse": method_a.log_fit.rmse,
-        "method_b_rmse": method_b.log_fit.rmse,
-        "tone_consensus_rmse": tone_consensus_rmse,
+        "hlg_path_rmse": dual_path.hlg.log_fit.rmse,
+        "raw_path_rmse": dual_path.raw.log_fit.rmse,
+        "dual_path_disagreement_rmse": dual_path.disagreement_rmse,
         "lut_mean_delta_e00": validation["mean_delta_e00"],
         "lut_p95_delta_e00": validation["p95_delta_e00"],
         "gray_reverse_steps": gray_axis["reverse_luma_steps"],
@@ -355,8 +353,15 @@ def run_synthetic_pipeline(
     _write_csv(target_path, ["X", "Y", "Z"], target_xyz)
     _write_csv(
         tone_path,
-        ["linear", "method_a_encoded", "method_b_encoded", "consensus_encoded"],
-        np.column_stack([linear_knots, encoded_a, encoded_b, consensus_encoded]),
+        ["linear", "hlg_path_encoded", "raw_path_encoded", "consensus_encoded"],
+        np.column_stack(
+            [
+                dual_path.linear,
+                dual_path.hlg_encoded,
+                dual_path.raw_encoded,
+                dual_path.consensus_encoded,
+            ]
+        ),
     )
     _write_measurement_policy_csv(policy_path, policy_linear, measurement_policy)
 
@@ -377,13 +382,7 @@ def run_synthetic_pipeline(
                 "model": config.color_model,
                 "delta_e00": ccm_summary,
             },
-            "paired_log_reconstruction": {
-                "method_a_rmse": method_a.log_fit.rmse,
-                "method_b_rmse": method_b.log_fit.rmse,
-                "tone_consensus_rmse": tone_consensus_rmse,
-                "method_a_input_range": [method_a.hlg_linear_min, method_a.hlg_linear_max],
-                "method_b_input_range": [method_b.common_linear_min, method_b.common_linear_max],
-            },
+            "dual_path_log_reconstruction": dual_path.to_dict(),
             "lut_deployment": {
                 "lut_size": config.lut_size,
                 "spatial_correction": spatial_spec.to_dict(),

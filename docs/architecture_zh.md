@@ -9,7 +9,8 @@
 | 阶段 | 输入 | 输出 | 必须记录的边界 |
 |---|---|---|---|
 | 测量点策略 | 黑场、受控曝光、局部白场、同位置配对 | 选择性校正后的成对坐标 | 数据类型、空间因子、是否改动横轴 |
-| Log 恢复 | 配准的 HLG/Log，可选 RAW | 相对线性轴到 Log 码值 | legal/full range、位深、公共前端假设 |
+| HLG 路径 | 配准的 HLG/Log | HLG 相对线性轴到 Log 码值 | legal/full range、位深、HLG 逆 OETF |
+| RAW 路径 | 标定后的 RAW 相对线性值/Log | RAW 相对线性轴到 Log 码值 | 黑电平、线性化、曝光基准、空间策略 |
 | 双路径一致性 | 两条 Log 拟合曲线 | 单调共识 tone curve | 共同输入范围、曲线分歧 RMSE |
 | 公开模板比较 | 相对线性值、Log 码值、拍摄组 | 统一自由度下的模板排名 | 公式来源、有效域、留出 RMSE、模板等价性 |
 | 校准支撑 | 反射率、光源 SPD、线性白场 | XYZ、二维平场、颜色模型 | 光谱范围、FOV、光源、曝光范围 |
@@ -31,15 +32,21 @@ paired:      (x_HLG, y_Log)      -> unchanged
 
 ## 4. 双路径共识
 
-方法 A 使用 HLG 标准逆 OETF 得到相对场景线性坐标；方法 B 使用 RAW 到逆 HLG RGB 的仿射公共前端。两条路径都拟合目标 Log：
+代码按三个模块组织：
+
+1. `hlg_path.py` 只接收 HLG 与 Log；
+2. `raw_path.py` 只接收已经标定到相对场景线性轴的 RAW 与 Log，不接收 HLG；
+3. `integration.py` 是实际使用入口，调用前两个模块并形成共识曲线。
+
+HLG 路径使用标准逆 OETF 得到相对场景线性坐标；RAW 路径使用完成黑电平、线性化、曝光归一和选择性空间校正后的独立 RAW 横轴。两条路径分别拟合目标 Log：
 
 ```text
 y_A(x) = fitted Log from paired HLG and Log
-y_B(x) = fitted Log from RAW, HLG and Log
+y_B(x) = fitted Log from calibrated RAW and Log
 y_consensus(x) = monotonic((y_A(x) + y_B(x)) / 2)
 ```
 
-总项目同时报告 `RMSE(y_A - y_B)`。该值不是普通拟合残差，而是两组建模假设之间的一致性指标。一致性不通过时，禁止只凭平均曲线生成“可信” LUT。
+主编排器不直接调用任一单路径函数，只调用 `reconstruct_dual_path()`。总项目同时在共同实测域报告 `RMSE(y_A - y_B)`。该值不是普通拟合残差，而是两组独立测量假设之间的一致性指标。一致性不通过时，禁止只凭平均曲线生成“可信” LUT。
 
 ## 5. 公开 Log 模板比较
 
@@ -68,9 +75,9 @@ RAW 派生平场只允许在线性域和已标定几何下使用。输出 `.cube
 ```text
 PASS = flat-field residual pass
    AND static CCM pass
-   AND paired Log method A pass
-   AND paired Log method B pass
-   AND cross-method agreement pass
+   AND HLG path pass
+   AND RAW path pass
+   AND cross-path agreement pass
    AND final-file DeltaE00 pass
    AND gray-axis monotonicity pass
 ```

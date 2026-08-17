@@ -6,7 +6,7 @@ The main sequence is:
 
 1. classify black, controlled-exposure, local-gradient and paired-transfer measurements;
 2. apply the selective flat-field policy to the measured axis without modifying Log codes;
-3. reconstruct a relative-linear-to-Log relationship from paired HLG/Log and optional RAW samples;
+3. independently reconstruct HLG-Log and calibrated RAW-Log responses;
 4. compare that empirical response against published Log shape families under equal fitting freedom;
 5. apply geometry-bound 2D correction to linear chart imagery before LUT training;
 6. export, re-read and benchmark the tone and color transform as a standard `.cube` 3D LUT.
@@ -17,11 +17,24 @@ The repository is an orchestration layer over three reusable component projects.
 
 ```mermaid
 flowchart LR
-    A0["Black / controlled / local / paired points"] --> A1["Selective measurement policy"]
-    A1 --> A["Paired HLG / Log + optional RAW"]
-    A --> B["Dual-path Log reconstruction"]
-    B --> C["Cross-method disagreement gate"]
-    C --> D1["Consensus encoded-to-linear tone curve"]
+    A0["Physical references and measurement preparation"] --> H0
+    A0 --> R0
+
+    subgraph H["HLG path"]
+        H0["Paired HLG / Log"] --> H1["HLG inverse OETF"]
+        H1 --> H2["HLG-relative linear x and Log y"]
+        H2 --> H3["Fitted Log curve H"]
+    end
+
+    subgraph R["RAW path"]
+        R0["Paired calibrated RAW / Log"] --> R1["Black subtraction and linearization"]
+        R1 --> R2["RAW-relative linear x and Log y"]
+        R2 --> R3["Fitted Log curve R"]
+    end
+
+    H3 --> C["Shared-domain disagreement gate"]
+    R3 --> C
+    C --> D1["Monotonic consensus tone curve"]
     C --> C2["Published Log-template comparison"]
 
     S1["Chart reflectance + illuminant SPD"] --> S2["Target XYZ"]
@@ -37,11 +50,21 @@ flowchart LR
     G --> H["Hashed provenance manifest"]
 ```
 
+## Three-part code organization
+
+| Part | Module | Public responsibility |
+|---|---|---|
+| 1. HLG | `hlg_path.py` | Invert the standard HLG OETF and fit HLG-relative-linear values to Log codes |
+| 2. RAW | `raw_path.py` | Fit calibrated RAW relative-linear values directly to Log codes; no HLG input |
+| 3. Integration | `integration.py` | Call both paths, measure shared-domain disagreement and build the monotonic consensus |
+
+The production orchestrator calls `reconstruct_dual_path()` from the integration module. The two single-path functions remain independently testable and reusable.
+
 ## Technical contributions
 
 ### 1. Two independent linearization paths become a measurable consistency test
 
-The HLG-Log route and the RAW-HLG common-front-end route estimate the same target Log response from different assumptions. The pipeline does not silently choose one. It samples both fitted curves on a shared relative-linear axis, records their disagreement and constructs a monotonic consensus curve only inside an explicitly measured domain.
+The HLG-Log route derives its linear axis from the standardized HLG inverse OETF. The RAW-Log route receives an independently calibrated RAW relative-linear exposure axis after black subtraction, linearization, exposure normalization and the selected spatial policy. Neither route calls the other. The integration module samples both fitted curves on a shared domain, records their disagreement and constructs a monotonic consensus.
 
 ### 2. Spatial and color transforms remain separate by construction
 
@@ -67,7 +90,7 @@ The template registry includes DJI D-Log, Insta360 I-Log, OPPO O-Log2, ARRI LogC
 
 | Stage | Component | Responsibility |
 |---|---|---|
-| Transfer reconstruction | [`paired-log-reconstruction`](https://github.com/Hower-Lv/paired-log-reconstruction) | HLG inversion, RAW-HLG alignment and unknown Log fitting |
+| Transfer primitives | [`paired-log-reconstruction`](https://github.com/Hower-Lv/paired-log-reconstruction) | HLG inversion and base Log-template fitting |
 | LUT deployment | [`chart-lut-builder`](https://github.com/Hower-Lv/chart-lut-builder) | tone/color composition, `.cube` export and final-file validation |
 | Calibration support | [`spectral-color-calibrator`](https://github.com/Hower-Lv/spectral-color-calibrator) | spectral XYZ, flat field, CCM and DeltaE00 targets |
 
@@ -157,7 +180,7 @@ It applies every local `.cube`, samples the central half-width area of each char
 ## Scientific boundaries
 
 - HLG provides a standardized relative scene-linear coordinate, not sensor electron counts or absolute radiometry.
-- The RAW-HLG common-front-end route remains a hypothesis that must be tested with held-out scenes.
+- The RAW path is valid only after black subtraction, linearization, spatial policy and exposure-axis normalization have been independently established.
 - A channel-separable tone curve cannot represent local tone mapping, hue-dependent processing or temporal denoising.
 - A CCM or LUT trained under one illuminant and exposure range is not automatically valid elsewhere.
 - Public template ranking identifies shape agreement only inside the measured domain.

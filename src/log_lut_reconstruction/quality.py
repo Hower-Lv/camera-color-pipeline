@@ -12,9 +12,9 @@ def evaluate_quality_gates(
     metric_names = {
         "max_flat_field_residual_cv": "flat_field_residual_cv",
         "max_ccm_mean_delta_e00": "ccm_mean_delta_e00",
-        "max_method_a_rmse": "method_a_rmse",
-        "max_method_b_rmse": "method_b_rmse",
-        "max_tone_consensus_rmse": "tone_consensus_rmse",
+        "max_hlg_path_rmse": "hlg_path_rmse",
+        "max_raw_path_rmse": "raw_path_rmse",
+        "max_dual_path_disagreement_rmse": "dual_path_disagreement_rmse",
         "max_lut_mean_delta_e00": "lut_mean_delta_e00",
         "max_lut_p95_delta_e00": "lut_p95_delta_e00",
         "max_gray_reverse_steps": "gray_reverse_steps",

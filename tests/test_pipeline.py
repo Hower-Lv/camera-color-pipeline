@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import inspect
 from dataclasses import replace
 
 import numpy as np
 import pytest
 
 from log_lut_reconstruction import PipelineConfig, QualityThresholds
+from log_lut_reconstruction.hlg_path import fit_hlg_log_path
 from log_lut_reconstruction.log_templates import (
     PUBLIC_LOG_TEMPLATES,
     compare_public_log_templates,
@@ -19,6 +21,7 @@ from log_lut_reconstruction.measurement_policy import (
     apply_spatial_correction_before_lut,
 )
 from log_lut_reconstruction.quality import evaluate_quality_gates
+from log_lut_reconstruction.raw_path import fit_raw_log_path
 
 
 def test_synthetic_pipeline_runs_end_to_end(tmp_path) -> None:
@@ -44,7 +47,7 @@ def test_synthetic_pipeline_runs_end_to_end(tmp_path) -> None:
         "spatial_correction",
         "measurement_point_policy",
         "static_color_calibration",
-        "paired_log_reconstruction",
+        "dual_path_log_reconstruction",
         "lut_deployment",
         "cross_capture_validation",
     }
@@ -55,9 +58,9 @@ def test_quality_gate_reports_failure() -> None:
     metrics = {
         "flat_field_residual_cv": 0.0,
         "ccm_mean_delta_e00": 0.0,
-        "method_a_rmse": 0.0,
-        "method_b_rmse": 0.0,
-        "tone_consensus_rmse": 0.0,
+        "hlg_path_rmse": 0.0,
+        "raw_path_rmse": 0.0,
+        "dual_path_disagreement_rmse": 0.0,
         "lut_mean_delta_e00": 0.5,
         "lut_p95_delta_e00": 0.5,
         "gray_reverse_steps": 0,
@@ -151,3 +154,39 @@ def test_spatial_correction_rejects_geometry_mismatch_before_lut() -> None:
             spec,
             actual_geometry_id="geometry_b",
         )
+
+
+def test_raw_path_api_has_no_hlg_input() -> None:
+    parameters = inspect.signature(fit_raw_log_path).parameters
+    assert list(parameters)[:2] == ["raw_relative_linear", "log_luma_code"]
+    assert all("hlg" not in name.lower() for name in parameters)
+
+
+def test_hlg_path_api_has_no_raw_input() -> None:
+    parameters = inspect.signature(fit_hlg_log_path).parameters
+    assert list(parameters)[:2] == ["hlg_luma_code", "log_luma_code"]
+    assert all("raw" not in name.lower() for name in parameters)
+
+
+def test_dual_path_integration_calls_independent_hlg_and_raw_paths() -> None:
+    try:
+        from log_reconstruction import LogTemplate, hlg_oetf
+
+        from log_lut_reconstruction.integration import reconstruct_dual_path
+    except ImportError as exc:
+        pytest.skip(str(exc))
+
+    linear = np.geomspace(0.002, 0.9, 256)
+    encoded = np.log2(1.0 + 24.0 * linear) / np.log2(25.0)
+    hlg_code = 64.0 + 876.0 * hlg_oetf(linear)
+    log_code = 64.0 + 876.0 * encoded
+    result = reconstruct_dual_path(
+        hlg_code,
+        linear,
+        log_code,
+        template=LogTemplate(curvature=24.0),
+    )
+    assert result.hlg.log_fit.rmse < 1e-6
+    assert result.raw.log_fit.rmse < 1e-6
+    assert result.disagreement_rmse < 1e-6
+    assert np.all(np.diff(result.consensus_encoded) >= 0.0)

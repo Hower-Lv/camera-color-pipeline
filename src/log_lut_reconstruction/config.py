@@ -11,9 +11,9 @@ from .measurement_policy import MeasurementPolicyConfig
 class QualityThresholds:
     max_flat_field_residual_cv: float = 0.005
     max_ccm_mean_delta_e00: float = 0.25
-    max_method_a_rmse: float = 0.001
-    max_method_b_rmse: float = 0.001
-    max_tone_consensus_rmse: float = 0.001
+    max_hlg_path_rmse: float = 0.001
+    max_raw_path_rmse: float = 0.001
+    max_dual_path_disagreement_rmse: float = 0.001
     max_lut_mean_delta_e00: float = 1.0
     max_lut_p95_delta_e00: float = 2.0
     max_gray_reverse_steps: int = 0
