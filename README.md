@@ -42,7 +42,7 @@ flowchart LR
     S2 --> S5["Camera RGB to XYZ model"]
     S4 --> S5
 
-    D1 --> D["Tone + color + CAT16 + output encoding"]
+    D1 --> D["Generate .cube LUT"]
     S5 --> D
     D --> E["17^3 / 33^3 / 65^3 .cube"]
     E --> F["Re-read and trilinear interpolation"]
