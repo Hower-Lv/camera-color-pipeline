@@ -28,6 +28,7 @@ class PipelineConfig:
     capture_count: int = 3
     log_curvature: float = 24.0
     color_model: str = "3x9"
+    chromatic_adaptation: str = "CAT16"
     ridge: float = 1e-5
     lut_size: int = 17
     neutral_width_cells: int = 1
@@ -71,6 +72,8 @@ class PipelineConfig:
             raise ValueError("log_curvature must be positive")
         if self.color_model not in {"3x3", "3x7", "3x9"}:
             raise ValueError("color_model must be 3x3, 3x7 or 3x9")
+        if self.chromatic_adaptation != "CAT16":
+            raise ValueError("chromatic_adaptation must be CAT16")
         if self.ridge < 0:
             raise ValueError("ridge cannot be negative")
         if self.lut_size < 2:

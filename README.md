@@ -42,7 +42,7 @@ flowchart LR
     S2 --> S5["Camera RGB to XYZ model"]
     S4 --> S5
 
-    D1 --> D["Tone + color + adaptation + output encoding"]
+    D1 --> D["Tone + color + CAT16 + output encoding"]
     S5 --> D
     D --> E["17^3 / 33^3 / 65^3 .cube"]
     E --> F["Re-read and trilinear interpolation"]
@@ -73,6 +73,8 @@ A flat field depends on image position `(x, y)`, while a standard 3D LUT depends
 ### 3. Chart calibration supports the Log-to-LUT claim
 
 Chart reflectance and illuminant SPD produce target XYZ. Those targets supervise the color model, but validation continues through `.cube` export, file re-read and trilinear interpolation. The reported error therefore describes the deployed artifact rather than only an in-memory fit.
+
+The integrated pipeline uses CAT16 for source-illuminant-to-D65 chromatic adaptation. It pre-adapts spectral target XYZ in the integration layer and passes D65 targets into the LUT component, so the component's internal source-to-destination adaptation is an identity transform. Bradford remains outside the production path.
 
 ### 4. Quality gates encode the scientific validity range
 
@@ -118,7 +120,8 @@ python examples/run_synthetic.py
 
 The synthetic run uses smooth reflectance spectra, a measured-illuminant analogue, a per-channel 2D gain field, paired HLG/Log observations and repeated chart captures. It writes:
 
-- `synthetic_target_xyz.csv`;
+- `synthetic_target_xyz_source.csv`;
+- `synthetic_target_xyz_d65_cat16.csv`;
 - `synthetic_tone_consensus.csv`;
 - `synthetic_measurement_policy.csv`;
 - `synthetic_camera_log_to_srgb.cube`;
@@ -183,6 +186,7 @@ It applies every local `.cube`, samples the central half-width area of each char
 - The RAW path is valid only after black subtraction, linearization, spatial policy and exposure-axis normalization have been independently established.
 - A channel-separable tone curve cannot represent local tone mapping, hue-dependent processing or temporal denoising.
 - A CCM or LUT trained under one illuminant and exposure range is not automatically valid elsewhere.
+- CAT16 is the production chromatic-adaptation model; alternative CATs require a separate sensitivity study rather than an implicit fallback.
 - Public template ranking identifies shape agreement only inside the measured domain.
 - A LUT requiring another vendor's Log encoding cannot be fairly ranked on unconverted D-Log M input.
 - Commercial spectra, footage and vendor LUTs require separate redistribution permission.

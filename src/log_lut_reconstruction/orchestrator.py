@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .color_adaptation import cat16_adaptation
 from .config import PipelineConfig
 from .integration import reconstruct_dual_path
 from .measurement_policy import (
@@ -23,7 +24,6 @@ try:
         D65_WHITE,
         XYZ_TO_SRGB,
         ToneCurve,
-        bradford_matrix,
         build_model,
         leave_one_capture_out,
     )
@@ -172,6 +172,8 @@ def run_synthetic_pipeline(
     source_white = reflectance_to_xyz(
         wavelengths, np.ones((1, wavelengths.size)), illuminant, cmfs
     )[0]
+    adaptation = cat16_adaptation(source_white, D65_WHITE)
+    candidate_xyz_d65 = candidate_xyz @ adaptation.T
 
     sensor_mix = np.array(
         [[0.74, 0.15, 0.05], [0.12, 0.78, 0.13], [0.04, 0.16, 0.82]],
@@ -185,9 +187,7 @@ def run_synthetic_pipeline(
     frontend /= np.sum(frontend, axis=1, keepdims=True)
     candidate_camera_rgb = (candidate_xyz @ sensor_mix) / camera_white
     candidate_common_rgb = np.clip(candidate_camera_rgb @ frontend.T, 0.0, 1.0)
-    candidate_destination_rgb = (
-        candidate_xyz @ bradford_matrix(source_white, D65_WHITE).T @ XYZ_TO_SRGB.T
-    )
+    candidate_destination_rgb = candidate_xyz_d65 @ XYZ_TO_SRGB.T
     gray_count = min(6, config.patch_count)
     neutral_width = config.neutral_width_cells / max(config.lut_size - 1, 1)
     encoded_candidate = _log_encode(candidate_common_rgb, config.log_curvature)
@@ -207,7 +207,8 @@ def run_synthetic_pipeline(
     selected = np.concatenate(
         [np.arange(gray_count), selected_chromatic[:needed_chromatic]]
     )
-    target_xyz = candidate_xyz[selected]
+    target_xyz_source = candidate_xyz[selected]
+    target_xyz_d65 = candidate_xyz_d65[selected]
     camera_rgb = candidate_camera_rgb[selected]
 
     height, width = 64, 96
@@ -227,10 +228,11 @@ def run_synthetic_pipeline(
     flat_field_residual_cv = float(np.max(np.std(normalized_white, axis=(0, 1))))
     spatial_spec = SpatialCorrectionSpec(config.measurement_policy.geometry_id)
 
-    ccm = fit_ccm(camera_rgb, target_xyz, model=config.color_model, ridge=config.ridge)
+    ccm = fit_ccm(camera_rgb, target_xyz_source, model=config.color_model, ridge=config.ridge)
     ccm_prediction = np.clip(apply_ccm(camera_rgb, ccm), 0.0, None)
     ccm_delta = delta_e_2000(
-        xyz_to_lab(ccm_prediction, source_white), xyz_to_lab(target_xyz, source_white)
+        xyz_to_lab(ccm_prediction, source_white),
+        xyz_to_lab(target_xyz_source, source_white),
     )
     ccm_summary = summarize_delta_e(ccm_delta)
 
@@ -300,7 +302,7 @@ def run_synthetic_pipeline(
     for capture_index in range(config.capture_count):
         noise = rng.normal(0.0, 0.0002, size=encoded_chart.shape)
         encoded_rows.append(np.clip(encoded_chart + noise, 0.0, 1.0))
-        xyz_rows.append(target_xyz)
+        xyz_rows.append(target_xyz_d65)
         capture_ids.extend([f"capture_{capture_index + 1}"] * config.patch_count)
     encoded_rows_array = np.vstack(encoded_rows)
     xyz_rows_array = np.vstack(xyz_rows)
@@ -312,7 +314,7 @@ def run_synthetic_pipeline(
         tone_curve,
         color_model=config.color_model,
         ridge=config.ridge,
-        source_white=source_white,
+        source_white=D65_WHITE,
         destination_white=D65_WHITE,
         lut_size=config.lut_size,
         neutral_width_cells=config.neutral_width_cells,
@@ -323,7 +325,7 @@ def run_synthetic_pipeline(
         tone_curve,
         color_model=config.color_model,
         ridge=config.ridge,
-        source_white=source_white,
+        source_white=D65_WHITE,
         destination_white=D65_WHITE,
         lut_size=config.lut_size,
         neutral_width_cells=config.neutral_width_cells,
@@ -347,10 +349,12 @@ def run_synthetic_pipeline(
     }
     quality = evaluate_quality_gates(metrics, config.quality)
 
-    target_path = output / "synthetic_target_xyz.csv"
+    target_path = output / "synthetic_target_xyz_d65_cat16.csv"
+    source_target_path = output / "synthetic_target_xyz_source.csv"
     tone_path = output / "synthetic_tone_consensus.csv"
     policy_path = output / "synthetic_measurement_policy.csv"
-    _write_csv(target_path, ["X", "Y", "Z"], target_xyz)
+    _write_csv(target_path, ["X", "Y", "Z"], target_xyz_d65)
+    _write_csv(source_target_path, ["X", "Y", "Z"], target_xyz_source)
     _write_csv(
         tone_path,
         ["linear", "hlg_path_encoded", "raw_path_encoded", "consensus_encoded"],
@@ -372,6 +376,9 @@ def run_synthetic_pipeline(
             "spectral_targets": {
                 "patch_count": config.patch_count,
                 "source_white_xyz": source_white.tolist(),
+                "destination_white_xyz": D65_WHITE.tolist(),
+                "chromatic_adaptation": config.chromatic_adaptation,
+                "adaptation_matrix": adaptation.tolist(),
             },
             "spatial_correction": {"flat_field_residual_cv": flat_field_residual_cv},
             "measurement_point_policy": {
@@ -385,6 +392,8 @@ def run_synthetic_pipeline(
             "dual_path_log_reconstruction": dual_path.to_dict(),
             "lut_deployment": {
                 "lut_size": config.lut_size,
+                "chromatic_adaptation": config.chromatic_adaptation,
+                "targets_pre_adapted_to_destination_white": True,
                 "spatial_correction": spatial_spec.to_dict(),
                 "training_samples_corrected_before_log_encoding": True,
                 "in_memory_mean_delta_e00": in_memory_validation["mean_delta_e00"],
@@ -407,11 +416,19 @@ def run_synthetic_pipeline(
         manifest_path,
         root=Path(config_path).resolve().parent.parent if config_path is not None else output,
         inputs=provenance_inputs,
-        artifacts=[cube_path, target_path, tone_path, policy_path, report_path],
+        artifacts=[
+            cube_path,
+            target_path,
+            source_target_path,
+            tone_path,
+            policy_path,
+            report_path,
+        ],
         metadata={
             "pipeline": "log-lut-reconstruction",
             "seed": config.seed,
             "status": quality["status"],
+            "chromatic_adaptation": config.chromatic_adaptation,
             "measurement_policy": config.measurement_policy.to_dict(),
         },
     )

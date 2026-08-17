@@ -6,7 +6,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from log_lut_reconstruction import PipelineConfig, QualityThresholds
+from log_lut_reconstruction import PipelineConfig, QualityThresholds, cat16_adaptation
 from log_lut_reconstruction.hlg_path import fit_hlg_log_path
 from log_lut_reconstruction.log_templates import (
     PUBLIC_LOG_TEMPLATES,
@@ -40,6 +40,8 @@ def test_synthetic_pipeline_runs_end_to_end(tmp_path) -> None:
     report = run_synthetic_pipeline(config, tmp_path)
     assert report["status"] == "pass"
     assert (tmp_path / "synthetic_camera_log_to_srgb.cube").is_file()
+    assert (tmp_path / "synthetic_target_xyz_d65_cat16.csv").is_file()
+    assert (tmp_path / "synthetic_target_xyz_source.csv").is_file()
     assert (tmp_path / "pipeline_report.json").is_file()
     assert (tmp_path / "provenance.json").is_file()
     assert set(report["stages"]) == {
@@ -51,6 +53,20 @@ def test_synthetic_pipeline_runs_end_to_end(tmp_path) -> None:
         "lut_deployment",
         "cross_capture_validation",
     }
+    assert report["stages"]["spectral_targets"]["chromatic_adaptation"] == "CAT16"
+    assert report["stages"]["lut_deployment"]["chromatic_adaptation"] == "CAT16"
+
+
+def test_cat16_maps_source_white_to_destination_white() -> None:
+    source = np.asarray([0.91, 1.0, 0.76])
+    destination = np.asarray([0.95047, 1.0, 1.08883])
+    matrix = cat16_adaptation(source, destination)
+    np.testing.assert_allclose(matrix @ source, destination, atol=1e-12, rtol=0.0)
+
+
+def test_pipeline_rejects_non_cat16_adaptation() -> None:
+    with pytest.raises(ValueError, match="chromatic_adaptation must be CAT16"):
+        replace(PipelineConfig(), chromatic_adaptation="Bradford").validate()
 
 
 def test_quality_gate_reports_failure() -> None:

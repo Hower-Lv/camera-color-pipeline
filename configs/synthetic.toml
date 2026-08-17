@@ -5,6 +5,7 @@ pair_sample_count = 4096
 capture_count = 3
 log_curvature = 24.0
 color_model = "3x9"
+chromatic_adaptation = "CAT16"
 ridge = 0.00001
 lut_size = 65
 neutral_width_cells = 1

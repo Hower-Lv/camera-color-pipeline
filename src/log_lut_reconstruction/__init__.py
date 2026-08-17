@@ -1,5 +1,6 @@
 """Reconstruct camera Log responses and deploy chart-validated LUTs."""
 
+from .color_adaptation import CAT16_MATRIX, cat16_adaptation
 from .config import PipelineConfig, QualityThresholds
 from .hlg_path import HLGPathResult, fit_hlg_log_path
 from .integration import DualPathResult, reconstruct_dual_path
@@ -32,6 +33,7 @@ def run_synthetic_pipeline(*args, **kwargs):
 
 __all__ = [
     "PipelineConfig",
+    "CAT16_MATRIX",
     "DualPathResult",
     "HLGPathResult",
     "PUBLIC_LOG_TEMPLATES",
@@ -40,6 +42,7 @@ __all__ = [
     "QualityThresholds",
     "RAWPathResult",
     "compare_public_log_templates",
+    "cat16_adaptation",
     "encode_public_log",
     "evaluate_quality_gates",
     "fit_public_log_template",
